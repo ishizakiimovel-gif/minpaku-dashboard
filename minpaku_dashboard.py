@@ -30,7 +30,6 @@ FACILITY_MAP = {
     'Sakura An｜北新宿':                       {'display': '北新宿（SakuraAn）',    'rooms': 1, 'capacity': '10名'},
     'Ann Stay Asakusabashi｜浅草橋':           {'display': '浅草橋（AnnStay）',      'rooms': 1, 'capacity': '5名'},
     'Home Oasis｜笹塚ホワイトハウス':          {'display': '笹塚ホワイトハウス',     'rooms': 1, 'capacity': '13名'},
-    'Kinshicho Sky｜錦糸町1003':               {'display': '錦糸町1003',             'rooms': 1, 'capacity': None},
     'R.Asakusa｜浅草（本所吾妻橋）':           {'display': '浅草（R.Asakusa）',      'rooms': 1, 'capacity': '5名'},
     'R.Ikebukuro｜池袋ロックビル':             {'display': '池袋ロックビル',         'rooms': 1, 'capacity': '5名'},
     'R.Shinjuku｜新宿（Green House市谷台町）': {'display': '新宿（GreenHouse）',      'rooms': 1, 'capacity': '8名'},

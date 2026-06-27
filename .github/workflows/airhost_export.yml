@@ -26,7 +26,9 @@ jobs:
             playwright-stealth \
             google-auth \
             google-api-python-client \
-            python-dateutil
+            google-auth-httplib2 \
+            python-dateutil \
+            pandas
 
       - name: Install Playwright browser
         run: |

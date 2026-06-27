@@ -6,16 +6,17 @@ AirHost CSV 自動エクスポートスクリプト（改良版）
 - 取得範囲：過去2ヶ月 + 未来6ヶ月
 - playwright-stealth でbot検知を回避
 """
-import os, json, time, re, base64, sys, random
+import io, os, json, time, re, base64, sys, random
 from datetime import date, timedelta
 from pathlib import Path
 from dateutil.relativedelta import relativedelta
+import pandas as pd
 from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload, MediaIoBaseUpload
 
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
@@ -304,7 +305,73 @@ def main():
 
         browser.close()
 
+    # 全期間統合ファイルを生成
+    generate_combined(drive_svc)
     print('\n完了！')
+
+
+# ─── 全期間統合CSVを生成してDriveにアップロード ─────────────
+def generate_combined(drive_svc):
+    print('\n全期間統合ファイルを生成中...')
+
+    # Drive上の Booking_20*.csv（期間別ファイル）を全件取得
+    res = drive_svc.files().list(
+        q=f"'{DRIVE_FOLDER_ID}' in parents and name contains 'Booking_20' and trashed=false",
+        fields='files(id, name)',
+        orderBy='name'
+    ).execute()
+
+    dfs = []
+    for f in res.get('files', []):
+        request = drive_svc.files().get_media(fileId=f['id'])
+        fh = io.BytesIO()
+        dl = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done:
+            _, done = dl.next_chunk()
+        fh.seek(0)
+        try:
+            df = pd.read_csv(fh, encoding='utf-8-sig')
+            if len(df) > 0:
+                dfs.append(df)
+                print(f'  読込: {f["name"]} ({len(df)}件)')
+        except Exception as e:
+            print(f'  スキップ: {f["name"]} ({e})')
+
+    if not dfs:
+        print('  結合対象なし')
+        return
+
+    combined = pd.concat(dfs, ignore_index=True)
+
+    # AirHost予約IDで重複除去（最新の更新日時を優先）
+    if 'AirHost予約ID' in combined.columns:
+        if '更新日時' in combined.columns:
+            combined = combined.sort_values('更新日時', ascending=True)
+        combined = combined.drop_duplicates(subset=['AirHost予約ID'], keep='last')
+
+    # チェックイン日順にソート
+    if 'チェックイン' in combined.columns:
+        combined['チェックイン'] = pd.to_datetime(combined['チェックイン'], errors='coerce')
+        combined = combined.sort_values('チェックイン')
+
+    # CSV化してアップロード
+    csv_bytes = combined.to_csv(index=False).encode('utf-8-sig')
+    fname = 'AirHost_全予約データ.csv'
+    existing = drive_svc.files().list(
+        q=f"'{DRIVE_FOLDER_ID}' in parents and name='{fname}' and trashed=false",
+        fields='files(id)'
+    ).execute().get('files', [])
+
+    media = MediaIoBaseUpload(io.BytesIO(csv_bytes), mimetype='text/csv', resumable=False)
+    if existing:
+        drive_svc.files().update(fileId=existing[0]['id'], media_body=media).execute()
+    else:
+        drive_svc.files().create(
+            body={'name': fname, 'parents': [DRIVE_FOLDER_ID]},
+            media_body=media
+        ).execute()
+    print(f'  => {fname} 更新完了（{len(combined)}件）')
 
 if __name__ == '__main__':
     main()

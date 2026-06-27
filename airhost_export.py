@@ -222,9 +222,21 @@ def main():
             return
 
         # ─ CSVダウンロードループ ─
+        current_month_start = date.today().replace(day=1)
+
         for i, (start_dt, end_dt) in enumerate(date_ranges):
             fname = f'Booking_{start_dt.strftime("%Y%m%d")}_{end_dt.strftime("%Y%m%d")}.csv'
             print(f'\n[{i+1}/{len(date_ranges)}] {start_dt} 〜 {end_dt}')
+
+            # 確定月スキップ：期間が今月より前に終わっていて、かつDriveにすでに存在する場合はスキップ
+            if end_dt < current_month_start:
+                res = drive_svc.files().list(
+                    q=f"'{DRIVE_FOLDER_ID}' in parents and name='{fname}' and trashed=false",
+                    fields='files(id)'
+                ).execute()
+                if res.get('files'):
+                    print(f'  確定済み・スキップ（Driveに保存済み）')
+                    continue
 
             success = False
             for attempt in range(2):

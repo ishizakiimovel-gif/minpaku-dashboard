@@ -123,7 +123,22 @@ def _parse_csv_bytes(raw: bytes):
     return None
 
 
+COMBINED_FILENAME = 'AirHost_全予約データ.csv'
+
+
 def _get_dfs_from_local():
+    # まず統合ファイルを探す
+    for root in CSV_ROOTS:
+        combined = os.path.join(root, COMBINED_FILENAME)
+        if os.path.exists(combined):
+            try:
+                with open(combined, 'rb') as fh:
+                    df = _parse_csv_bytes(fh.read())
+                if df is not None:
+                    return [df]
+            except Exception:
+                pass
+    # フォールバック: 個別ファイル
     dfs, seen = [], set()
     for root in CSV_ROOTS:
         for f in sorted(glob.glob(os.path.join(root, 'Booking_*.csv'))):
@@ -149,22 +164,19 @@ def _get_dfs_from_drive():
     svc   = build('drive', 'v3', credentials=creds, cache_discovery=False)
     items = svc.files().list(
         q=(f"'{DRIVE_FOLDER_ID}' in parents "
-           f"and name contains 'Booking_' "
+           f"and name = '{COMBINED_FILENAME}' "
            f"and trashed = false"),
         fields='files(id, name)',
-        pageSize=200,
     ).execute().get('files', [])
-    dfs = []
-    for item in items:
-        buf = _io.BytesIO()
-        dl  = MediaIoBaseDownload(buf, svc.files().get_media(fileId=item['id']))
-        done = False
-        while not done:
-            _, done = dl.next_chunk()
-        df = _parse_csv_bytes(buf.getvalue())
-        if df is not None:
-            dfs.append(df)
-    return dfs
+    if not items:
+        return []
+    buf = _io.BytesIO()
+    dl  = MediaIoBaseDownload(buf, svc.files().get_media(fileId=items[0]['id']))
+    done = False
+    while not done:
+        _, done = dl.next_chunk()
+    df = _parse_csv_bytes(buf.getvalue())
+    return [df] if df is not None else []
 
 
 def _process_dfs(raw_dfs: list):

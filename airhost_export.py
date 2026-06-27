@@ -29,7 +29,8 @@ EXPORT_URL       = 'https://pms.airhost.co/ja/import-export/export-bookings'
 AIRHOST_EMAIL    = 'ishizaki.imovel@gmail.com'
 AIRHOST_PASS     = os.environ.get('AIRHOST_PASS', '11aoistaytokyo')
 
-DRIVE_FOLDER_ID  = '10SFTfWNehj8M9gEgGpFh-W-VmTLkrC2V'
+DRIVE_FOLDER_ID      = '10SFTfWNehj8M9gEgGpFh-W-VmTLkrC2V'
+DRIVE_SUBFOLDER_NAME = '元データ'
 
 # ローカルとCIで切り替わるパス
 GMAIL_CREDS_PATH = os.environ.get(
@@ -85,10 +86,12 @@ def _decode_body(payload):
     return base64.urlsafe_b64decode(data + '==').decode('utf-8', errors='ignore') if data else ''
 
 # ─── Driveアップロード ────────────────────────────────────────
-def upload_to_drive(filepath, drive_svc):
+def upload_to_drive(filepath, drive_svc, folder_id=None):
+    if folder_id is None:
+        folder_id = DRIVE_FOLDER_ID
     name = Path(filepath).name
     res  = drive_svc.files().list(
-        q=f"'{DRIVE_FOLDER_ID}' in parents and name='{name}' and trashed=false",
+        q=f"'{folder_id}' in parents and name='{name}' and trashed=false",
         fields='files(id)'
     ).execute()
     existing = res.get('files', [])
@@ -98,10 +101,49 @@ def upload_to_drive(filepath, drive_svc):
         print(f'  Drive更新: {name}')
     else:
         drive_svc.files().create(
-            body={'name': name, 'parents': [DRIVE_FOLDER_ID]},
+            body={'name': name, 'parents': [folder_id]},
             media_body=media
         ).execute()
         print(f'  Drive作成: {name}')
+
+
+# ─── 元データサブフォルダ取得or作成 ──────────────────────────
+def get_or_create_subfolder(drive_svc):
+    res = drive_svc.files().list(
+        q=(f"'{DRIVE_FOLDER_ID}' in parents"
+           f" and name='{DRIVE_SUBFOLDER_NAME}'"
+           f" and mimeType='application/vnd.google-apps.folder'"
+           f" and trashed=false"),
+        fields='files(id)'
+    ).execute()
+    files = res.get('files', [])
+    if files:
+        return files[0]['id']
+    folder = drive_svc.files().create(
+        body={
+            'name': DRIVE_SUBFOLDER_NAME,
+            'mimeType': 'application/vnd.google-apps.folder',
+            'parents': [DRIVE_FOLDER_ID]
+        },
+        fields='id'
+    ).execute()
+    print(f'  「{DRIVE_SUBFOLDER_NAME}」フォルダを作成: {folder["id"]}')
+    return folder['id']
+
+
+# ─── 既存期間別CSVをサブフォルダへ移動（初回のみ）────────────
+def migrate_to_subfolder(drive_svc, subfolder_id):
+    res = drive_svc.files().list(
+        q=f"'{DRIVE_FOLDER_ID}' in parents and name contains 'Booking_20' and trashed=false",
+        fields='files(id, name)'
+    ).execute()
+    for f in res.get('files', []):
+        drive_svc.files().update(
+            fileId=f['id'],
+            addParents=subfolder_id,
+            removeParents=DRIVE_FOLDER_ID
+        ).execute()
+        print(f'  移動: {f["name"]} → {DRIVE_SUBFOLDER_NAME}/')
 
 # ─── 日付入力（Ant Design RangePicker）─────────────────────
 def set_date_range(page, start_dt, end_dt):
@@ -201,6 +243,10 @@ def main():
     drive_svc = build('drive', 'v3', credentials=gmail_creds, cache_discovery=False)
     print('Gmail/Drive認証 OK')
 
+    # 元データサブフォルダ取得・作成、既存ファイル移動
+    subfolder_id = get_or_create_subfolder(drive_svc)
+    migrate_to_subfolder(drive_svc, subfolder_id)
+
     date_ranges = get_date_ranges()
     print(f'取得範囲: {date_ranges[0][0]} 〜 {date_ranges[-1][1]} ({len(date_ranges)}分割)')
 
@@ -229,14 +275,14 @@ def main():
             fname = f'Booking_{start_dt.strftime("%Y%m%d")}_{end_dt.strftime("%Y%m%d")}.csv'
             print(f'\n[{i+1}/{len(date_ranges)}] {start_dt} 〜 {end_dt}')
 
-            # 確定月スキップ：期間が今月より前に終わっていて、かつDriveにすでに存在する場合はスキップ
+            # 確定月スキップ：期間が今月より前に終わっていて、かつ元データに保存済みならスキップ
             if end_dt < current_month_start:
                 res = drive_svc.files().list(
-                    q=f"'{DRIVE_FOLDER_ID}' in parents and name='{fname}' and trashed=false",
+                    q=f"'{subfolder_id}' in parents and name='{fname}' and trashed=false",
                     fields='files(id)'
                 ).execute()
                 if res.get('files'):
-                    print(f'  確定済み・スキップ（Driveに保存済み）')
+                    print(f'  確定済み・スキップ（元データに保存済み）')
                     continue
 
             success = False
@@ -285,7 +331,7 @@ def main():
                     download.save_as(str(save_path))
                     print(f'  保存: {fname}')
 
-                    upload_to_drive(save_path, drive_svc)
+                    upload_to_drive(save_path, drive_svc, folder_id=subfolder_id)
                     success = True
                     break
 
@@ -306,17 +352,17 @@ def main():
         browser.close()
 
     # 全期間統合ファイルを生成
-    generate_combined(drive_svc)
+    generate_combined(drive_svc, subfolder_id)
     print('\n完了！')
 
 
 # ─── 全期間統合CSVを生成してDriveにアップロード ─────────────
-def generate_combined(drive_svc):
+def generate_combined(drive_svc, subfolder_id):
     print('\n全期間統合ファイルを生成中...')
 
-    # Drive上の Booking_20*.csv（期間別ファイル）を全件取得
+    # 元データフォルダの Booking_20*.csv を全件取得
     res = drive_svc.files().list(
-        q=f"'{DRIVE_FOLDER_ID}' in parents and name contains 'Booking_20' and trashed=false",
+        q=f"'{subfolder_id}' in parents and name contains 'Booking_20' and trashed=false",
         fields='files(id, name)',
         orderBy='name'
     ).execute()

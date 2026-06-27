@@ -1,0 +1,47 @@
+name: AirHost CSV Export
+
+on:
+  schedule:
+    # 毎週月曜 6:00 AM JST (日曜 21:00 UTC)
+    - cron: '0 21 * * 0'
+  workflow_dispatch:  # 手動でも実行可能
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install \
+            playwright \
+            playwright-stealth \
+            google-auth \
+            google-api-python-client \
+            python-dateutil
+
+      - name: Install Playwright browser
+        run: |
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Write Gmail credentials
+        run: |
+          echo '${{ secrets.GMAIL_CREDENTIALS_JSON }}' > /tmp/gmail_creds.json
+
+      - name: Run AirHost export
+        env:
+          CI: 'true'
+          AIRHOST_PASS: ${{ secrets.AIRHOST_PASS }}
+          GMAIL_CREDS_PATH: /tmp/gmail_creds.json
+          DOWNLOAD_DIR: /tmp/AirHost_CSV
+          COOKIE_FILE: /tmp/airhost_cookies.json
+        run: python airhost_export.py

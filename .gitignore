@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 AirHost_CSV/
 Booking_*.csv
+airhost_cookies.json

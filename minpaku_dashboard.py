@@ -163,22 +163,42 @@ def _get_dfs_from_drive():
         dict(st.secrets['gcp_service_account']),
         scopes=['https://www.googleapis.com/auth/drive.readonly'],
     )
-    svc   = build('drive', 'v3', credentials=creds, cache_discovery=False)
+    svc = build('drive', 'v3', credentials=creds, cache_discovery=False)
+
+    def _download(file_id):
+        buf = _io.BytesIO()
+        dl  = MediaIoBaseDownload(buf, svc.files().get_media(fileId=file_id))
+        done = False
+        while not done:
+            _, done = dl.next_chunk()
+        return buf.getvalue()
+
+    # ① 統合ファイルを優先して探す
     items = svc.files().list(
         q=(f"'{DRIVE_FOLDER_ID}' in parents "
            f"and name = '{COMBINED_FILENAME}' "
            f"and trashed = false"),
         fields='files(id, name)',
     ).execute().get('files', [])
-    if not items:
-        return []
-    buf = _io.BytesIO()
-    dl  = MediaIoBaseDownload(buf, svc.files().get_media(fileId=items[0]['id']))
-    done = False
-    while not done:
-        _, done = dl.next_chunk()
-    df = _parse_csv_bytes(buf.getvalue())
-    return [df] if df is not None else []
+    if items:
+        df = _parse_csv_bytes(_download(items[0]['id']))
+        return [df] if df is not None else []
+
+    # ② 統合ファイルがなければ個別 Booking_*.csv を読む（フォールバック）
+    items = svc.files().list(
+        q=(f"'{DRIVE_FOLDER_ID}' in parents "
+           f"and name contains 'Booking_' "
+           f"and trashed = false"),
+        fields='files(id, name)',
+        orderBy='name',
+        pageSize=50,
+    ).execute().get('files', [])
+    dfs = []
+    for item in items:
+        df = _parse_csv_bytes(_download(item['id']))
+        if df is not None:
+            dfs.append(df)
+    return dfs
 
 
 def _process_dfs(raw_dfs: list):

@@ -12,6 +12,8 @@ import calendar
 import glob
 import os
 import io as _io
+import json as _json
+import urllib.request
 
 try:
     from google.oauth2 import service_account
@@ -443,6 +445,35 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
     st.caption(f'読込件数: {len(df_all):,} 件')
+
+    # AirHostデータ手動取得（マスターのみ）
+    if is_master:
+        st.divider()
+        if st.button('🚀 AirHostデータ取得'):
+            gh_token = st.secrets.get('github_token', '')
+            if not gh_token:
+                st.error('Streamlit secrets に github_token が未設定です')
+            else:
+                req = urllib.request.Request(
+                    'https://api.github.com/repos/ishizakiimovel-gif/minpaku-dashboard'
+                    '/actions/workflows/airhost_export.yml/dispatches',
+                    data=_json.dumps({'ref': 'master'}).encode(),
+                    headers={
+                        'Authorization': f'Bearer {gh_token}',
+                        'Accept': 'application/vnd.github+json',
+                        'X-GitHub-Api-Version': '2022-11-28',
+                        'Content-Type': 'application/json',
+                    },
+                    method='POST',
+                )
+                try:
+                    with urllib.request.urlopen(req) as resp:
+                        if resp.status == 204:
+                            st.success('✅ 実行をリクエストしました（1〜2分後に開始）')
+                except urllib.error.HTTPError as e:
+                    st.error(f'GitHub APIエラー {e.code}: {e.read().decode()}')
+                except Exception as e:
+                    st.error(f'エラー: {e}')
     if is_master:
         with st.expander('利用可能物件名（CSVから）'):
             for n in sorted(df_all['物件名'].dropna().unique()):

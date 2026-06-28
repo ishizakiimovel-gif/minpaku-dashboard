@@ -2,9 +2,9 @@ name: AirHost CSV Export
 
 on:
   schedule:
-    # 毎週月曜 6:00 AM JST (日曜 21:00 UTC)
-    - cron: '0 21 * * 0'
-  workflow_dispatch:  # 手動でも実行可能
+    - cron: '0 21 * * 0'   # 毎週月曜 6:00 AM JST（日曜 21:00 UTC）
+    - cron: '0 21 28 6 *'  # 2026/6/29 6:00 AM JST（6/28 21:00 UTC）一回限り
+  workflow_dispatch:  # 手動でも実行可能（GitHub ActionsページまたはStreamlitボタンから）
 
 jobs:
   export:

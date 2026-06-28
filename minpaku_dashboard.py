@@ -14,6 +14,7 @@ import os
 import io as _io
 import json as _json
 import urllib.request
+import re as _re
 
 try:
     from google.oauth2 import service_account
@@ -26,6 +27,8 @@ except ImportError:
 # ─────────────────────────────────────────────────────────────
 # 設定
 # ─────────────────────────────────────────────────────────────
+
+KAGURAZAKA_FAC_KEY = '神楽坂｜牛込神楽坂'
 
 FACILITY_MAP = {
     # ── 自社物件（1部屋）──────────────────────────────────────
@@ -92,6 +95,18 @@ FACILITY_MAP = {
             {'label': '03号室 3・4F', 'rtm': '富士見町 - 03号室 - 3・4F', 'rooms': 2, 'capacity': '3名'},
         ],
     },
+    # ── Airbnb専用物件 ────────────────────────────────────────
+    KAGURAZAKA_FAC_KEY: {
+        'display': '神楽坂（InnM）★代行', 'rooms': 5, 'capacity': '3〜10名',
+        'data_source': 'airbnb',
+        'room_types': [
+            {'label': 'A', 'rtm': 'A', 'rooms': 1, 'capacity': '4名'},
+            {'label': 'B', 'rtm': 'B', 'rooms': 1, 'capacity': '3名'},
+            {'label': 'C', 'rtm': 'C', 'rooms': 1, 'capacity': '4名'},
+            {'label': 'D', 'rtm': 'D', 'rooms': 1, 'capacity': '10名'},
+            {'label': 'E', 'rtm': 'E', 'rooms': 1, 'capacity': '5名'},
+        ],
+    },
 }
 
 OCC_TARGETS = [
@@ -125,7 +140,78 @@ def _parse_csv_bytes(raw: bytes):
     return None
 
 
-COMBINED_FILENAME = 'AirHost_全予約データ.csv'
+COMBINED_FILENAME     = 'AirHost_全予約データ.csv'
+AIRBNB_SUBFOLDER_NAME = 'Airbnb_神楽坂'
+AIRBNB_SUBFOLDER_ID   = '1mV0awKN0cKPMX8UasB6DcSUguOUjdxGa'
+
+
+def _extract_airbnb_room_type(listing_name: str) -> str:
+    """リスティング名末尾のアルファベット（A〜E）を部屋タイプとして返す"""
+    parts = str(listing_name).split('丨')
+    last = parts[-1].strip().rstrip('+').strip()
+    if _re.match(r'^[A-E]$', last):
+        return last
+    letters = _re.findall(r'[A-E]', str(listing_name))
+    return letters[-1] if letters else ''
+
+
+def _parse_airbnb_csv(content_bytes: bytes):
+    """AirbnbのCSV（神楽坂）をAirHost互換DataFrameに変換する。
+    - Payout行は除外
+    - 補助ホストの受取金は絶対値に変換してから合算
+    - それ以外の種別はすべて金額をそのまま合算（調整金など将来の追加払いも含む）
+    """
+    for enc in ('utf-8-sig', 'utf-8', 'cp932'):
+        try:
+            df_raw = pd.read_csv(_io.BytesIO(content_bytes), encoding=enc)
+            if '種別' in df_raw.columns and '金額' in df_raw.columns:
+                break
+        except Exception:
+            continue
+    else:
+        return None
+
+    df_raw['金額']    = pd.to_numeric(df_raw['金額'],    errors='coerce').fillna(0)
+    df_raw['清掃料金'] = pd.to_numeric(df_raw.get('清掃料金', 0), errors='coerce').fillna(0)
+    df_raw['泊数']    = pd.to_numeric(df_raw.get('泊数', 0),    errors='coerce').fillna(0)
+
+    # 補助ホストの受取金だけ絶対値化してから合算対象に
+    df_raw.loc[df_raw['種別'] == '補助ホストの受取金', '金額'] = \
+        df_raw.loc[df_raw['種別'] == '補助ホストの受取金', '金額'].abs()
+
+    # Payout は集計不要（単なる銀行振込記録）
+    df_work  = df_raw[df_raw['種別'] != 'Payout'].copy()
+    df_yoyaku = df_raw[df_raw['種別'] == '予約'].copy()
+
+    rows = []
+    for code, group in df_work.groupby('確認コード', dropna=True):
+        yr_rows = df_yoyaku[df_yoyaku['確認コード'] == code]
+        if yr_rows.empty:
+            continue
+        yr = yr_rows.iloc[0]
+
+        listing   = str(yr.get('リスティング', ''))
+        room_type = _extract_airbnb_room_type(listing)
+        total_rev = float(group['金額'].sum())
+        cleaning  = float(yr.get('清掃料金', 0) or 0)
+
+        rows.append({
+            '物件名':           KAGURAZAKA_FAC_KEY,
+            'ルームタイプメニュー': room_type,
+            '受取金':           total_rev,
+            'クリーニング代':    cleaning,
+            '合計日数':         float(yr.get('泊数', 0) or 0),
+            'ゲスト数':         0,
+            'チェックイン':      yr.get('開始日',  ''),
+            'チェックアウト':    yr.get('終了日',  ''),
+            '予約日':           yr.get('予約日',  ''),
+            '国籍':             '',
+            'AirHost予約ID':    code,
+        })
+
+    if not rows:
+        return None
+    return pd.DataFrame(rows)
 
 
 def _get_dfs_from_local():
@@ -155,6 +241,19 @@ def _get_dfs_from_local():
                     dfs.append(df)
             except Exception:
                 pass
+
+    # 神楽坂 Airbnb CSV（ローカル）
+    for root in CSV_ROOTS:
+        airbnb_dir = os.path.join(root, AIRBNB_SUBFOLDER_NAME)
+        for f in sorted(glob.glob(os.path.join(airbnb_dir, 'airbnb_*.csv'))):
+            try:
+                with open(f, 'rb') as fh:
+                    df = _parse_airbnb_csv(fh.read())
+                if df is not None:
+                    dfs.append(df)
+            except Exception:
+                pass
+
     return dfs
 
 
@@ -173,7 +272,8 @@ def _get_dfs_from_drive():
             _, done = dl.next_chunk()
         return buf.getvalue()
 
-    # ① 統合ファイルを優先して探す
+    # ① AirHost: 統合ファイルを優先して探す
+    airhost_dfs = []
     items = svc.files().list(
         q=(f"'{DRIVE_FOLDER_ID}' in parents "
            f"and name = '{COMBINED_FILENAME}' "
@@ -182,23 +282,39 @@ def _get_dfs_from_drive():
     ).execute().get('files', [])
     if items:
         df = _parse_csv_bytes(_download(items[0]['id']))
-        return [df] if df is not None else []
+        if df is not None:
+            airhost_dfs.append(df)
+    else:
+        # ② 統合ファイルがなければ個別 Booking_*.csv を読む（フォールバック）
+        items = svc.files().list(
+            q=(f"'{DRIVE_FOLDER_ID}' in parents "
+               f"and name contains 'Booking_' "
+               f"and trashed = false"),
+            fields='files(id, name)',
+            orderBy='name',
+            pageSize=50,
+        ).execute().get('files', [])
+        for item in items:
+            df = _parse_csv_bytes(_download(item['id']))
+            if df is not None:
+                airhost_dfs.append(df)
 
-    # ② 統合ファイルがなければ個別 Booking_*.csv を読む（フォールバック）
-    items = svc.files().list(
-        q=(f"'{DRIVE_FOLDER_ID}' in parents "
-           f"and name contains 'Booking_' "
+    # ③ 神楽坂 Airbnb CSV（専用サブフォルダから常に読む）
+    airbnb_dfs = []
+    airbnb_items = svc.files().list(
+        q=(f"'{AIRBNB_SUBFOLDER_ID}' in parents "
+           f"and name contains 'airbnb_' "
            f"and trashed = false"),
         fields='files(id, name)',
         orderBy='name',
         pageSize=50,
     ).execute().get('files', [])
-    dfs = []
-    for item in items:
-        df = _parse_csv_bytes(_download(item['id']))
+    for item in airbnb_items:
+        df = _parse_airbnb_csv(_download(item['id']))
         if df is not None:
-            dfs.append(df)
-    return dfs
+            airbnb_dfs.append(df)
+
+    return airhost_dfs + airbnb_dfs
 
 
 def _process_dfs(raw_dfs: list):

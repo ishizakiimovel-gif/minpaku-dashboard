@@ -195,6 +195,13 @@ def _parse_airbnb_csv(content_bytes: bytes):
         total_rev = float(group['金額'].sum())
         cleaning  = float(yr.get('清掃料金', 0) or 0)
 
+        def _fmt(s):
+            # MM/DD/YYYY → YYYY-MM-DD に変換（pandas の混在形式対策）
+            try:
+                return pd.to_datetime(str(s), format='%m/%d/%Y').strftime('%Y-%m-%d')
+            except Exception:
+                return ''
+
         rows.append({
             '物件名':           KAGURAZAKA_FAC_KEY,
             'ルームタイプメニュー': room_type,
@@ -202,9 +209,9 @@ def _parse_airbnb_csv(content_bytes: bytes):
             'クリーニング代':    cleaning,
             '合計日数':         float(yr.get('泊数', 0) or 0),
             'ゲスト数':         0,
-            'チェックイン':      yr.get('開始日',  ''),
-            'チェックアウト':    yr.get('終了日',  ''),
-            '予約日':           yr.get('予約日',  ''),
+            'チェックイン':      _fmt(yr.get('開始日',  '')),
+            'チェックアウト':    _fmt(yr.get('終了日',  '')),
+            '予約日':           _fmt(yr.get('予約日',  '')),
             '国籍':             '',
             'AirHost予約ID':    code,
         })

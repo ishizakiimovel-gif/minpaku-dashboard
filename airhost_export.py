@@ -31,6 +31,13 @@ AIRHOST_PASS     = os.environ.get('AIRHOST_PASS', '11aoistaytokyo')
 
 DRIVE_FOLDER_ID      = '10SFTfWNehj8M9gEgGpFh-W-VmTLkrC2V'
 DRIVE_SUBFOLDER_NAME = '元データ'
+COMPANY_SELECT_URL   = 'https://pms.airhost.co/ja/company-select'
+
+# ダウンロード対象の会社一覧（name: AirHost上の表示名, prefix: ファイル名の接頭辞）
+COMPANIES = [
+    {'name': '合同会社あおい',                'prefix': ''},
+    {'name': '有限会社山王リハビリ・サポート', 'prefix': 'sanno'},
+]
 
 # ローカルとCIで切り替わるパス
 GMAIL_CREDS_PATH = os.environ.get(
@@ -196,34 +203,47 @@ def do_login(page, gmail_svc):
     except Exception:
         print('  2FAなし')
 
-    # 会社選択
+    # 会社選択画面まで待つ（会社の選択は select_company() で別途行う）
     try:
         page.wait_for_selector('text=合同会社あおい', timeout=15000)
-        page.query_selector('text=合同会社あおい').click()
-        page.wait_for_load_state('networkidle', timeout=30000)
-        print('  会社選択完了')
+        print('  会社選択画面に到達')
     except Exception:
         pass
 
     return True
 
+
+# ─── 会社選択 ──────────────────────────────────────────────────
+def select_company(page, company_name):
+    """会社選択画面に移動して指定の会社を選択する"""
+    page.goto(COMPANY_SELECT_URL)
+    page.wait_for_load_state('networkidle', timeout=20000)
+    time.sleep(2)
+    btn = page.query_selector(f'text={company_name}')
+    if btn:
+        btn.click()
+        page.wait_for_load_state('networkidle', timeout=30000)
+        print(f'  会社選択: {company_name}')
+        return True
+    print(f'  会社が見つかりません: {company_name}')
+    return False
+
 # ─── Cookie を使ってセッション再利用を試みる ────────────────
 def ensure_logged_in(page, context, gmail_svc):
-    """Cookieがあれば再利用、なければ/期限切れならフルログイン"""
+    """Cookieがあれば再利用、なければ/期限切れならフルログイン（会社選択は select_company() で別途行う）"""
     if COOKIE_FILE.exists():
         print('Cookie読み込み中...')
         cookies = json.loads(COOKIE_FILE.read_text())
         context.add_cookies(cookies)
-        page.goto(EXPORT_URL)
+        page.goto(COMPANY_SELECT_URL)
         time.sleep(3)
-        if SIGN_IN_URL not in page.url and 'company-select' not in page.url:
+        if SIGN_IN_URL not in page.url:
             print('Cookie有効: ログインスキップ')
             return True
         print('Cookie期限切れ → 再ログイン')
 
     ok = do_login(page, gmail_svc)
     if ok:
-        # Cookie保存
         cookies = context.cookies()
         COOKIE_FILE.write_text(json.dumps(cookies, ensure_ascii=False))
         print('Cookie保存完了')
@@ -268,86 +288,97 @@ def main():
             browser.close()
             return
 
-        # ─ CSVダウンロードループ ─
+        # ─ 会社別CSVダウンロードループ ─
         current_month_start = date.today().replace(day=1)
 
-        for i, (start_dt, end_dt) in enumerate(date_ranges):
-            fname = f'Booking_{start_dt.strftime("%Y%m%d")}_{end_dt.strftime("%Y%m%d")}.csv'
-            print(f'\n[{i+1}/{len(date_ranges)}] {start_dt} 〜 {end_dt}')
+        for company in COMPANIES:
+            co_name   = company['name']
+            co_prefix = company['prefix']
+            print(f'\n{"="*40}\n会社: {co_name}\n{"="*40}')
 
-            # 確定月スキップ：期間が今月より前に終わっていて、かつ元データに保存済みならスキップ
-            if end_dt < current_month_start:
-                res = drive_svc.files().list(
-                    q=f"'{subfolder_id}' in parents and name='{fname}' and trashed=false",
-                    fields='files(id)'
-                ).execute()
-                if res.get('files'):
-                    print(f'  確定済み・スキップ（元データに保存済み）')
-                    continue
+            if not select_company(page, co_name):
+                print(f'  スキップ: {co_name}')
+                continue
 
-            success = False
-            for attempt in range(2):
-                # エクスポートページへ（毎回新鮮な状態）
-                page.goto(EXPORT_URL)
-                time.sleep(3)
+            for i, (start_dt, end_dt) in enumerate(date_ranges):
+                prefix_part = f'{co_prefix}_' if co_prefix else ''
+                fname = f'Booking_{prefix_part}{start_dt.strftime("%Y%m%d")}_{end_dt.strftime("%Y%m%d")}.csv'
+                print(f'\n[{i+1}/{len(date_ranges)}] {start_dt} 〜 {end_dt}  ({co_name})')
 
-                # ログアウトされていたら再ログイン
-                if SIGN_IN_URL in page.url or 'company-select' in page.url:
-                    print('  セッション切れ → 再ログイン')
-                    do_login(page, gmail_svc)
-                    cookies = context.cookies()
-                    COOKIE_FILE.write_text(json.dumps(cookies, ensure_ascii=False))
+                # 確定月スキップ：期間が今月より前に終わっていて、かつ元データに保存済みならスキップ
+                if end_dt < current_month_start:
+                    res = drive_svc.files().list(
+                        q=f"'{subfolder_id}' in parents and name='{fname}' and trashed=false",
+                        fields='files(id)'
+                    ).execute()
+                    if res.get('files'):
+                        print(f'  確定済み・スキップ（元データに保存済み）')
+                        continue
+
+                success = False
+                for attempt in range(2):
+                    # エクスポートページへ（毎回新鮮な状態）
                     page.goto(EXPORT_URL)
                     time.sleep(3)
 
-                # アコーディオン展開
-                btns = page.query_selector_all('button, [role="button"]')
-                if len(btns) < 2:
-                    print(f'  アコーディオンボタンなし (attempt {attempt+1})')
-                    time.sleep(3)
-                    continue
-                btns[1].click()
-                time.sleep(2)
+                    # ログアウト・会社切替されていたら再ログイン＋会社選択
+                    if SIGN_IN_URL in page.url or 'company-select' in page.url:
+                        print('  セッション切れ → 再ログイン')
+                        do_login(page, gmail_svc)
+                        cookies = context.cookies()
+                        COOKIE_FILE.write_text(json.dumps(cookies, ensure_ascii=False))
+                        select_company(page, co_name)
+                        page.goto(EXPORT_URL)
+                        time.sleep(3)
 
-                # 日付セット
-                if not set_date_range(page, start_dt, end_dt):
-                    print(f'  日付セット失敗 (attempt {attempt+1})')
-                    continue
+                    # アコーディオン展開
+                    btns = page.query_selector_all('button, [role="button"]')
+                    if len(btns) < 2:
+                        print(f'  アコーディオンボタンなし (attempt {attempt+1})')
+                        time.sleep(3)
+                        continue
+                    btns[1].click()
+                    time.sleep(2)
 
-                time.sleep(1)
-
-                # CSVダウンロード
-                try:
-                    btns_now = page.query_selector_all('button, [role="button"]')
-                    csv_btn  = next((b for b in btns_now if 'CSV' in b.inner_text()), None)
-                    if not csv_btn:
-                        print(f'  CSVボタンなし (attempt {attempt+1})')
+                    # 日付セット
+                    if not set_date_range(page, start_dt, end_dt):
+                        print(f'  日付セット失敗 (attempt {attempt+1})')
                         continue
 
-                    with page.expect_download(timeout=150000) as dl_info:
-                        csv_btn.click()
-                    download  = dl_info.value
-                    save_path = DOWNLOAD_DIR / fname
-                    download.save_as(str(save_path))
-                    print(f'  保存: {fname}')
+                    time.sleep(1)
 
-                    upload_to_drive(save_path, drive_svc, folder_id=subfolder_id)
-                    success = True
-                    break
+                    # CSVダウンロード
+                    try:
+                        btns_now = page.query_selector_all('button, [role="button"]')
+                        csv_btn  = next((b for b in btns_now if 'CSV' in b.inner_text()), None)
+                        if not csv_btn:
+                            print(f'  CSVボタンなし (attempt {attempt+1})')
+                            continue
 
-                except Exception as e:
-                    print(f'  エラー (attempt {attempt+1}): {e}')
+                        with page.expect_download(timeout=150000) as dl_info:
+                            csv_btn.click()
+                        download  = dl_info.value
+                        save_path = DOWNLOAD_DIR / fname
+                        download.save_as(str(save_path))
+                        print(f'  保存: {fname}')
+
+                        upload_to_drive(save_path, drive_svc, folder_id=subfolder_id)
+                        success = True
+                        break
+
+                    except Exception as e:
+                        print(f'  エラー (attempt {attempt+1}): {e}')
+                        continue
+
+                if not success:
+                    print(f'  => {i+1}本目スキップ')
                     continue
 
-            if not success:
-                print(f'  => {i+1}本目スキップ')
-                continue
-
-            # ダウンロード間のランダム待機（人間らしく）
-            if i < len(date_ranges) - 1:
-                wait = random.uniform(5, 15)
-                print(f'  次まで {wait:.1f}秒 待機...')
-                time.sleep(wait)
+                # ダウンロード間のランダム待機（人間らしく）
+                if i < len(date_ranges) - 1:
+                    wait = random.uniform(5, 15)
+                    print(f'  次まで {wait:.1f}秒 待機...')
+                    time.sleep(wait)
 
         browser.close()
 
@@ -360,9 +391,9 @@ def main():
 def generate_combined(drive_svc, subfolder_id):
     print('\n全期間統合ファイルを生成中...')
 
-    # 元データフォルダの Booking_20*.csv を全件取得
+    # 元データフォルダの Booking_*.csv を全件取得（あおい分 + sanno_分）
     res = drive_svc.files().list(
-        q=f"'{subfolder_id}' in parents and name contains 'Booking_20' and trashed=false",
+        q=f"'{subfolder_id}' in parents and name contains 'Booking_' and trashed=false",
         fields='files(id, name)',
         orderBy='name'
     ).execute()

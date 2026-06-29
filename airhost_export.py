@@ -34,6 +34,7 @@ GMAIL_APP_PASSWORD = os.environ.get('GMAIL_APP_PASSWORD', '')
 
 DRIVE_FOLDER_ID      = '10SFTfWNehj8M9gEgGpFh-W-VmTLkrC2V'
 DRIVE_SUBFOLDER_NAME = '元データ'
+COOKIE_DRIVE_NAME    = 'airhost_session_cookies.json'   # Drive上のセッションCookieファイル名
 COMPANY_SELECT_URL   = 'https://pms.airhost.co/ja/company-select'
 
 # ダウンロード対象の会社一覧（name: AirHost上の表示名, prefix: ファイル名の接頭辞）
@@ -152,6 +153,54 @@ def upload_to_drive(filepath, drive_svc, folder_id=None):
             media_body=media
         ).execute()
         print(f'  Drive作成: {name}')
+
+
+# ─── セッションCookieをDriveからダウンロード ───────────────────
+def download_cookies_from_drive(drive_svc):
+    """Drive上の airhost_session_cookies.json を COOKIE_FILE に保存して返す"""
+    try:
+        res = drive_svc.files().list(
+            q=(f"'{DRIVE_FOLDER_ID}' in parents"
+               f" and name='{COOKIE_DRIVE_NAME}' and trashed=false"),
+            fields='files(id, modifiedTime)'
+        ).execute()
+        files = res.get('files', [])
+        if not files:
+            print('Cookie(Drive): 未保存 → ローカル or フルログインを試みます')
+            return False
+        content = drive_svc.files().get_media(fileId=files[0]['id']).execute()
+        COOKIE_FILE.write_bytes(content)
+        print(f'Cookie(Drive): ダウンロード完了（最終更新: {files[0]["modifiedTime"][:10]}）')
+        return True
+    except Exception as e:
+        print(f'Cookie(Drive): ダウンロード失敗: {e}')
+        return False
+
+
+# ─── セッションCookieをDriveへアップロード ───────────────────
+def upload_cookies_to_drive(drive_svc):
+    """COOKIE_FILE の内容を Drive に保存（更新 or 新規）"""
+    if not COOKIE_FILE.exists():
+        return
+    try:
+        content = COOKIE_FILE.read_bytes()
+        media = MediaIoBaseUpload(io.BytesIO(content), mimetype='application/json')
+        res = drive_svc.files().list(
+            q=(f"'{DRIVE_FOLDER_ID}' in parents"
+               f" and name='{COOKIE_DRIVE_NAME}' and trashed=false"),
+            fields='files(id)'
+        ).execute()
+        files = res.get('files', [])
+        if files:
+            drive_svc.files().update(fileId=files[0]['id'], media_body=media).execute()
+        else:
+            drive_svc.files().create(
+                body={'name': COOKIE_DRIVE_NAME, 'parents': [DRIVE_FOLDER_ID]},
+                media_body=media
+            ).execute()
+        print('Cookie(Drive): アップロード完了（次回CI起動時に再利用）')
+    except Exception as e:
+        print(f'Cookie(Drive): アップロード失敗: {e}')
 
 
 # ─── 元データサブフォルダ取得or作成 ──────────────────────────
@@ -343,6 +392,9 @@ def main():
     drive_svc = build('drive', 'v3', credentials=drive_creds, cache_discovery=False)
     print('Drive認証 OK')
 
+    # DriveからCookieをダウンロード（あればローカルファイルを上書き）
+    download_cookies_from_drive(drive_svc)
+
     # 元データサブフォルダ取得・作成、既存ファイル移動、日付サブフォルダ作成
     subfolder_id = get_or_create_subfolder(drive_svc)
     migrate_to_subfolder(drive_svc, subfolder_id)
@@ -364,6 +416,9 @@ def main():
 
         # ログイン or Cookie再利用
         ok = ensure_logged_in(page, context)
+        if ok:
+            # ログイン成功後、最新CookieをDriveに保存（次回CI起動時に再利用）
+            upload_cookies_to_drive(drive_svc)
         if not ok:
             print('ログイン失敗')
             # 診断用スクリーンショットをDriveにアップロード

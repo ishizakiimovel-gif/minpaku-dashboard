@@ -53,6 +53,7 @@ jobs:
       - name: Run AirHost export
         env:
           CI: 'true'
+          PYTHONUNBUFFERED: '1'
           AIRHOST_PASS: ${{ secrets.AIRHOST_PASS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           GMAIL_CREDS_PATH: /tmp/gmail_creds.json

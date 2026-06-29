@@ -258,6 +258,12 @@ def do_login(page):
     page.fill('#password', AIRHOST_PASS)
     page.click('button[type="submit"]')
 
+    # フォーム送信直後のページ状態をスクリーンショットで記録（ボット検知診断用）
+    time.sleep(3)
+    ss_path = Path('/tmp/login_debug.png')
+    page.screenshot(path=str(ss_path), full_page=True)
+    print(f'  スクリーンショット保存: {ss_path}  URL={page.url}')
+
     # 2FA（メール到着まで最大30秒待つ）
     try:
         page.wait_for_selector('#otpCode', timeout=30000)
@@ -353,6 +359,19 @@ def main():
         ok = ensure_logged_in(page, context)
         if not ok:
             print('ログイン失敗')
+            # 診断用スクリーンショットをDriveにアップロード
+            ss_path = Path('/tmp/login_debug.png')
+            if ss_path.exists():
+                try:
+                    img_data = ss_path.read_bytes()
+                    media = MediaIoBaseUpload(io.BytesIO(img_data), mimetype='image/png')
+                    drive_svc.files().create(
+                        body={'name': f'login_debug_{date.today()}.png', 'parents': [DRIVE_FOLDER_ID]},
+                        media_body=media
+                    ).execute()
+                    print(f'  スクリーンショットをDriveにアップロードしました: login_debug_{date.today()}.png')
+                except Exception as e:
+                    print(f'  スクリーンショットアップロード失敗: {e}')
             browser.close()
             return
 

@@ -36,6 +36,32 @@ def _fmt_jst(utc_str: str) -> str:
     except Exception:
         return utc_str
 
+def _get_run_status(gh_token: str) -> dict:
+    """GitHub Actions の最新ワークフロー実行状況を返す。失敗時は空 dict。"""
+    if not gh_token:
+        return {}
+    try:
+        url = ('https://api.github.com/repos/ishizakiimovel-gif/minpaku-dashboard'
+               '/actions/workflows/airhost_export.yml/runs?per_page=1')
+        req = urllib.request.Request(url, headers={
+            'Authorization': f'Bearer {gh_token}',
+            'Accept': 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+        })
+        with urllib.request.urlopen(req) as resp:
+            data = _json.loads(resp.read())
+        runs = data.get('workflow_runs')
+        if not runs:
+            return {}
+        r = runs[0]
+        return {
+            'status':     r.get('status', ''),      # queued / in_progress / completed
+            'conclusion': r.get('conclusion') or '', # success / failure / cancelled
+            'started_at': r.get('run_started_at') or r.get('created_at', ''),
+        }
+    except Exception:
+        return {}
+
 # ─────────────────────────────────────────────────────────────
 # 設定
 # ─────────────────────────────────────────────────────────────
@@ -614,9 +640,39 @@ with st.sidebar:
     # AirHostデータ手動取得（マスターのみ）
     if is_master:
         st.divider()
-        if st.button('🚀 AirHostデータ取得'):
-            gh_token = st.secrets.get('github_token', '')
-            if not gh_token:
+
+        # ── GitHub Actions 実行ステータス ────────────────────
+        _gh_token = st.secrets.get('github_token', '')
+        _gh_run = _get_run_status(_gh_token)
+        _gh_status = _gh_run.get('status', '')
+        _gh_conc   = _gh_run.get('conclusion', '')
+        _gh_start  = _gh_run.get('started_at', '')
+        if _gh_status in ('queued', 'in_progress'):
+            # 経過時間を計算
+            _elapsed_str = ''
+            try:
+                _dt_s = datetime.fromisoformat(_gh_start.replace('Z', '+00:00'))
+                _mins = int((datetime.now(_JST) - _dt_s.astimezone(_JST)).total_seconds() / 60)
+                _elapsed_str = f'（{_mins}分経過）'
+            except Exception:
+                pass
+            _start_hm = ''
+            try:
+                _start_hm = datetime.fromisoformat(
+                    _gh_start.replace('Z', '+00:00')
+                ).astimezone(_JST).strftime('%H:%M JST')
+            except Exception:
+                pass
+            st.info(f'⏳ **AirHostデータ取得中** {_start_hm} {_elapsed_str}\n\n'
+                    '完了後に「データ再読込」を押してください。')
+        elif _gh_status == 'completed' and _gh_conc == 'success':
+            st.caption(f'✅ 前回成功: {_fmt_jst(_gh_start)}')
+        elif _gh_status == 'completed':
+            st.warning(f'❌ 前回失敗 ({_gh_conc}): {_fmt_jst(_gh_start)}')
+
+        if st.button('🚀 AirHostデータ取得',
+                     disabled=(_gh_status in ('queued', 'in_progress'))):
+            if not _gh_token:
                 st.error('Streamlit secrets に github_token が未設定です')
             else:
                 req = urllib.request.Request(
@@ -624,7 +680,7 @@ with st.sidebar:
                     '/actions/workflows/airhost_export.yml/dispatches',
                     data=_json.dumps({'ref': 'master'}).encode(),
                     headers={
-                        'Authorization': f'Bearer {gh_token}',
+                        'Authorization': f'Bearer {_gh_token}',
                         'Accept': 'application/vnd.github+json',
                         'X-GitHub-Api-Version': '2022-11-28',
                         'Content-Type': 'application/json',
@@ -634,17 +690,13 @@ with st.sidebar:
                 try:
                     with urllib.request.urlopen(req) as resp:
                         if resp.status == 204:
-                            _req_time = datetime.now(_JST).strftime('%Y/%m/%d %H:%M JST')
-                            st.session_state['_airhost_req_at'] = _req_time
                             st.success('✅ 実行をリクエストしました（1〜2分後に開始）')
+                            st.rerun()
                 except urllib.error.HTTPError as e:
                     st.error(f'GitHub APIエラー {e.code}: {e.read().decode()}')
                 except Exception as e:
                     st.error(f'エラー: {e}')
-        # リクエスト済みステータス表示
-        if st.session_state.get('_airhost_req_at'):
-            st.caption(f'🕐 最終リクエスト: {st.session_state["_airhost_req_at"]}')
-            st.caption('⏳ 完了後「データ再読込」を押してください')
+
         with st.expander('利用可能物件名（CSVから）'):
             for n in sorted(df_all['物件名'].dropna().unique()):
                 st.text(n)
@@ -1212,3 +1264,9 @@ if tab3 is not None:
 
     html += '</tbody></table></div>'
     st.markdown(html, unsafe_allow_html=True)
+
+# ─ 実行中のとき30秒ごとに自動更新 ──────────────────────────────
+import time as _time
+if is_master and _gh_status in ('queued', 'in_progress'):
+    _time.sleep(30)
+    st.rerun()

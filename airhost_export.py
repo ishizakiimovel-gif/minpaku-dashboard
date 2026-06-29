@@ -37,9 +37,9 @@ DRIVE_SUBFOLDER_NAME = '元データ'
 COMPANY_SELECT_URL   = 'https://pms.airhost.co/ja/company-select'
 
 # ダウンロード対象の会社一覧（name: AirHost上の表示名, prefix: ファイル名の接頭辞）
+# 山王は月次（毎月10日）に別スケジュールで実行するため週次からは除外
 COMPANIES = [
-    {'name': '合同会社あおい',                'prefix': ''},
-    {'name': '有限会社山王リハビリ・サポート', 'prefix': 'sanno'},
+    {'name': '合同会社あおい', 'prefix': ''},
 ]
 
 # ローカルとCIで切り替わるパス
@@ -70,6 +70,10 @@ def read_2fa_code(wait_sec=90):
     """Gmail App Password + IMAP で2FAコードを取得する（OAuth不要・期限切れなし）"""
     start_time = time.time()
     print('  2FAコード待機中（IMAP）...')
+    # IMAP SINCE は英語月名必須（ロケール非依存で生成）
+    _MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+    _today  = date.today()
+    since_str = f'{_today.day:02d}-{_MONTHS[_today.month-1]}-{_today.year}'
     # Gmail はタブ分類で INBOX 以外に入る場合があるため複数フォルダを検索
     SEARCH_FOLDERS = ['INBOX', '"[Gmail]/All Mail"']
     for attempt in range(wait_sec // 5):
@@ -82,21 +86,23 @@ def read_2fa_code(wait_sec=90):
                 rv, _ = mail.select(folder)
                 if rv != 'OK':
                     continue
-                _, nums = mail.search(None, 'UNSEEN')
+                # 今日届いた未読メールのみ（16,000件超の全未読を舐めるのを防ぐ）
+                _, nums = mail.search(None, f'UNSEEN SINCE {since_str}')
                 msg_nums = nums[0].split()
                 if attempt == 0:
-                    print(f'    {folder}: 未読{len(msg_nums)}件')
+                    print(f'    {folder}: 今日の未読{len(msg_nums)}件')
                 for num in reversed(msg_nums):  # 新しい順（降順）に確認
                     _, data = mail.fetch(num, '(RFC822)')
                     msg  = _email.message_from_bytes(data[0][1])
-                    from_hdr = msg.get('From', '').lower()
-                    subj_hdr = msg.get('Subject', '').lower()
+                    # msg.get() は encoded header を Header オブジェクトで返す場合があるため str() で変換
+                    from_hdr = str(msg.get('From', '')).lower()
+                    subj_hdr = str(msg.get('Subject', '')).lower()
                     # From か Subject に airhost が含まれるメールのみ処理
                     if 'airhost' not in from_hdr and 'airhost' not in subj_hdr:
                         continue
                     # この関数が呼ばれる前に届いていた古いメール（60秒以上前）はスキップ
                     try:
-                        mail_ts = parsedate_to_datetime(msg.get('Date', '')).timestamp()
+                        mail_ts = parsedate_to_datetime(str(msg.get('Date', ''))).timestamp()
                         if mail_ts < start_time - 60:
                             print(f'    古いコードをスキップ（{int(start_time - mail_ts)}秒前のメール）')
                             continue
@@ -393,14 +399,13 @@ def main():
                         page.goto(EXPORT_URL)
                         time.sleep(3)
 
-                    # アコーディオン展開
-                    btns = page.query_selector_all('button, [role="button"]')
-                    if len(btns) < 2:
-                        print(f'  アコーディオンボタンなし (attempt {attempt+1})')
-                        time.sleep(3)
+                    # アコーディオン展開（テキストで確実に「予約データのエクスポート」を開く）
+                    try:
+                        page.click('text=予約データのエクスポート', timeout=10000)
+                        page.wait_for_selector('#dateRange', timeout=10000)
+                    except Exception as e:
+                        print(f'  アコーディオン展開失敗 (attempt {attempt+1}): {e}')
                         continue
-                    btns[1].click()
-                    time.sleep(2)
 
                     # 日付セット
                     if not set_date_range(page, start_dt, end_dt):

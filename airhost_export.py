@@ -138,6 +138,32 @@ def get_or_create_subfolder(drive_svc):
     return folder['id']
 
 
+# ─── 元データ内に実行日付のサブフォルダを作成 ─────────────────
+def get_or_create_date_subfolder(drive_svc, subfolder_id):
+    """元データ/YYYY-MM-DD/ フォルダを作成して返す"""
+    today_str = date.today().strftime('%Y-%m-%d')
+    res = drive_svc.files().list(
+        q=(f"'{subfolder_id}' in parents"
+           f" and name='{today_str}'"
+           f" and mimeType='application/vnd.google-apps.folder'"
+           f" and trashed=false"),
+        fields='files(id)'
+    ).execute()
+    files = res.get('files', [])
+    if files:
+        return files[0]['id']
+    folder = drive_svc.files().create(
+        body={
+            'name':     today_str,
+            'mimeType': 'application/vnd.google-apps.folder',
+            'parents':  [subfolder_id]
+        },
+        fields='id'
+    ).execute()
+    print(f'  日付フォルダ作成: {today_str}')
+    return folder['id']
+
+
 # ─── 既存期間別CSVをサブフォルダへ移動（初回のみ）────────────
 def migrate_to_subfolder(drive_svc, subfolder_id):
     res = drive_svc.files().list(
@@ -263,9 +289,10 @@ def main():
     drive_svc = build('drive', 'v3', credentials=gmail_creds, cache_discovery=False)
     print('Gmail/Drive認証 OK')
 
-    # 元データサブフォルダ取得・作成、既存ファイル移動
+    # 元データサブフォルダ取得・作成、既存ファイル移動、日付サブフォルダ作成
     subfolder_id = get_or_create_subfolder(drive_svc)
     migrate_to_subfolder(drive_svc, subfolder_id)
+    date_subfolder_id = get_or_create_date_subfolder(drive_svc, subfolder_id)
 
     date_ranges = get_date_ranges()
     print(f'取得範囲: {date_ranges[0][0]} 〜 {date_ranges[-1][1]} ({len(date_ranges)}分割)')
@@ -362,7 +389,7 @@ def main():
                         download.save_as(str(save_path))
                         print(f'  保存: {fname}')
 
-                        upload_to_drive(save_path, drive_svc, folder_id=subfolder_id)
+                        upload_to_drive(save_path, drive_svc, folder_id=date_subfolder_id)
                         success = True
                         break
 
@@ -387,19 +414,50 @@ def main():
     print('\n完了！')
 
 
+# ─── 元データ内 Booking_*.csv を再帰1段で列挙 ──────────────
+def _list_all_booking_files(drive_svc, subfolder_id):
+    """元データ直下 + 日付サブフォルダ内の Booking_*.csv を古い順に返す"""
+    all_files = []
+    # 直下のフラットファイル（旧形式との互換）
+    res = drive_svc.files().list(
+        q=(f"'{subfolder_id}' in parents"
+           f" and name contains 'Booking_'"
+           f" and mimeType='text/csv'"
+           f" and trashed=false"),
+        fields='files(id, name)',
+        orderBy='name',
+        pageSize=200,
+    ).execute()
+    all_files.extend(res.get('files', []))
+    # 日付サブフォルダを名前順（＝日付順）で取得
+    sub_res = drive_svc.files().list(
+        q=(f"'{subfolder_id}' in parents"
+           f" and mimeType='application/vnd.google-apps.folder'"
+           f" and trashed=false"),
+        fields='files(id, name)',
+        orderBy='name',
+    ).execute()
+    for sub in sub_res.get('files', []):
+        res2 = drive_svc.files().list(
+            q=(f"'{sub['id']}' in parents"
+               f" and name contains 'Booking_'"
+               f" and mimeType='text/csv'"
+               f" and trashed=false"),
+            fields='files(id, name)',
+            orderBy='name',
+            pageSize=200,
+        ).execute()
+        all_files.extend(res2.get('files', []))
+    return all_files
+
+
 # ─── 全期間統合CSVを生成してDriveにアップロード ─────────────
 def generate_combined(drive_svc, subfolder_id):
     print('\n全期間統合ファイルを生成中...')
 
-    # 元データフォルダの Booking_*.csv を全件取得（あおい分 + sanno_分）
-    res = drive_svc.files().list(
-        q=f"'{subfolder_id}' in parents and name contains 'Booking_' and trashed=false",
-        fields='files(id, name)',
-        orderBy='name'
-    ).execute()
-
+    # 元データ直下 + 日付サブフォルダ内の Booking_*.csv を全件取得
     dfs = []
-    for f in res.get('files', []):
+    for f in _list_all_booking_files(drive_svc, subfolder_id):
         request = drive_svc.files().get_media(fileId=f['id'])
         fh = io.BytesIO()
         dl = MediaIoBaseDownload(fh, request)

@@ -68,33 +68,51 @@ def get_date_ranges():
 def read_2fa_code(wait_sec=90):
     """Gmail App Password + IMAP で2FAコードを取得する（OAuth不要・期限切れなし）"""
     print('  2FAコード待機中（IMAP）...')
-    for _ in range(wait_sec // 5):
+    # Gmail はタブ分類で INBOX 以外に入る場合があるため複数フォルダを検索
+    SEARCH_FOLDERS = ['INBOX', '"[Gmail]/All Mail"']
+    for attempt in range(wait_sec // 5):
         time.sleep(5)
         try:
             mail = imaplib.IMAP4_SSL('imap.gmail.com')
             mail.login(AIRHOST_EMAIL, GMAIL_APP_PASSWORD)
-            mail.select('INBOX')
-            _, nums = mail.search(None, 'UNSEEN FROM "airhost"')
-            for num in nums[0].split():
-                _, data = mail.fetch(num, '(RFC822)')
-                msg  = _email.message_from_bytes(data[0][1])
-                body = ''
-                if msg.is_multipart():
-                    for part in msg.walk():
-                        if part.get_content_type() == 'text/plain':
-                            body = part.get_payload(decode=True).decode('utf-8', errors='ignore')
-                            break
-                else:
-                    body = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
-                match = re.search(r'\b(\d{6})\b', body)
-                if match:
-                    mail.store(num, '+FLAGS', '\\Seen')
-                    mail.logout()
-                    print(f'  コード取得: {match.group(1)}')
-                    return match.group(1)
+            found_code = None
+            for folder in SEARCH_FOLDERS:
+                rv, _ = mail.select(folder)
+                if rv != 'OK':
+                    continue
+                _, nums = mail.search(None, 'UNSEEN')
+                msg_nums = nums[0].split()
+                if attempt == 0:
+                    print(f'    {folder}: 未読{len(msg_nums)}件')
+                for num in msg_nums:
+                    _, data = mail.fetch(num, '(RFC822)')
+                    msg  = _email.message_from_bytes(data[0][1])
+                    from_hdr = msg.get('From', '').lower()
+                    subj_hdr = msg.get('Subject', '').lower()
+                    # From か Subject に airhost が含まれるメールのみ処理
+                    if 'airhost' not in from_hdr and 'airhost' not in subj_hdr:
+                        continue
+                    body = ''
+                    if msg.is_multipart():
+                        for part in msg.walk():
+                            if part.get_content_type() == 'text/plain':
+                                body = part.get_payload(decode=True).decode('utf-8', errors='ignore')
+                                break
+                    else:
+                        body = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
+                    m = re.search(r'\b(\d{6})\b', body)
+                    if m:
+                        mail.store(num, '+FLAGS', '\\Seen')
+                        found_code = m.group(1)
+                        break
+                if found_code:
+                    break
             mail.logout()
+            if found_code:
+                print(f'  コード取得: {found_code}')
+                return found_code
         except Exception as e:
-            print(f'  IMAPエラー: {e}')
+            print(f'  IMAPエラー({attempt+1}): {e}')
     print('  ERROR: 2FAコード取得失敗（IMAP）')
     return None
 

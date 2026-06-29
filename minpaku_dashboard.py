@@ -279,23 +279,29 @@ def _get_dfs_from_drive():
             _, done = dl.next_chunk()
         return buf.getvalue()
 
-    # ① AirHost: 統合ファイルを優先して探す
+    # ① AirHost: 統合ファイルを優先して探す（更新日時も取得）
     airhost_dfs = []
+    combined_modified_time = None
     items = svc.files().list(
         q=(f"'{DRIVE_FOLDER_ID}' in parents "
            f"and name = '{COMBINED_FILENAME}' "
            f"and trashed = false"),
-        fields='files(id, name)',
+        fields='files(id, name, modifiedTime)',
     ).execute().get('files', [])
     if items:
+        combined_modified_time = items[0].get('modifiedTime', '')
         df = _parse_csv_bytes(_download(items[0]['id']))
         if df is not None:
             airhost_dfs.append(df)
-    # ② 個別 Booking_*.csv も常に追加（統合ファイル未収録の新データに対応）
+    # ② 統合ファイル生成後に追加された個別 Booking_*.csv だけを読む
+    #    （統合ファイルがなければ全件読む）
+    indiv_q = (f"'{DRIVE_FOLDER_ID}' in parents "
+               f"and name contains 'Booking_' "
+               f"and trashed = false")
+    if combined_modified_time:
+        indiv_q += f" and modifiedTime > '{combined_modified_time}'"
     indiv_items = svc.files().list(
-        q=(f"'{DRIVE_FOLDER_ID}' in parents "
-           f"and name contains 'Booking_' "
-           f"and trashed = false"),
+        q=indiv_q,
         fields='files(id, name)',
         orderBy='name',
         pageSize=50,

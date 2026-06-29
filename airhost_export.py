@@ -353,13 +353,29 @@ def select_company(page, company_name):
     page.goto(COMPANY_SELECT_URL)
     page.wait_for_load_state('networkidle', timeout=20000)
     time.sleep(2)
+
+    # 1社のみの場合など、AirHostが自動でダッシュボードに遷移していればそのままOK
+    if 'company-select' not in page.url:
+        print(f'  会社選択画面をスキップ（自動遷移済み）: URL={page.url}')
+        return True
+
     btn = page.query_selector(f'text={company_name}')
     if btn:
         btn.click()
         page.wait_for_load_state('networkidle', timeout=30000)
         print(f'  会社選択: {company_name}')
         return True
+
+    # 見つからない場合は診断情報を出力
     print(f'  会社が見つかりません: {company_name}')
+    print(f'  現在のURL: {page.url}')
+    try:
+        print(f'  ページテキスト（先頭500文字）: {page.inner_text("body")[:500]}')
+    except Exception:
+        pass
+    ss_path = Path('/tmp/company_select_debug.png')
+    page.screenshot(path=str(ss_path), full_page=True)
+    print(f'  診断スクリーンショット: {ss_path}')
     return False
 
 # ─── Cookie を使ってセッション再利用を試みる ────────────────

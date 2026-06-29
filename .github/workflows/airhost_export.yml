@@ -39,6 +39,17 @@ jobs:
         run: |
           echo '${{ secrets.GMAIL_CREDENTIALS_JSON }}' > /tmp/gmail_creds.json
 
+      - name: Write AirHost cookies
+        run: |
+          if [ -n "$AIRHOST_COOKIES_JSON" ]; then
+            echo "$AIRHOST_COOKIES_JSON" > /tmp/airhost_cookies.json
+            echo "Cookieファイルを書き込みました"
+          else
+            echo "AIRHOST_COOKIES_JSON未設定 → フルログインを試みます"
+          fi
+        env:
+          AIRHOST_COOKIES_JSON: ${{ secrets.AIRHOST_COOKIES_JSON }}
+
       - name: Run AirHost export
         env:
           CI: 'true'

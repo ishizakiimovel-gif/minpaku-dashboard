@@ -254,8 +254,15 @@ def do_login(page):
     page.goto(SIGN_IN_URL)
     page.wait_for_load_state('networkidle')
     time.sleep(2)
-    page.fill('#email', AIRHOST_EMAIL)
-    page.fill('#password', AIRHOST_PASS)
+    # 1文字ずつランダム間隔で入力（ボット検知対策）
+    page.locator('#email').click()
+    time.sleep(random.uniform(0.3, 0.8))
+    page.locator('#email').type(AIRHOST_EMAIL, delay=random.randint(60, 130))
+    time.sleep(random.uniform(0.3, 0.7))
+    page.locator('#password').click()
+    time.sleep(random.uniform(0.2, 0.6))
+    page.locator('#password').type(AIRHOST_PASS, delay=random.randint(60, 130))
+    time.sleep(random.uniform(0.5, 1.2))
     page.click('button[type="submit"]')
 
     # フォーム送信直後のページ状態をスクリーンショットで記録（ボット検知診断用）

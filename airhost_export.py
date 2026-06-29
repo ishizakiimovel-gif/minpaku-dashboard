@@ -325,8 +325,14 @@ def do_login(page):
         if not code:
             print('  2FAコード取得失敗 → ログイン中断')
             return False
-        page.locator('#otpCode').fill(code, force=True)  # force=True で hidden 状態でも入力
-        page.click('button[type="submit"]')
+        # click(force=True) でフォーカスを当ててからキーボード入力
+        # fill() は React 管理の Input に届かない場合があるため keyboard.type() を使う
+        page.locator('#otpCode').last.click(force=True)
+        time.sleep(0.3)
+        page.keyboard.type(code)
+        time.sleep(0.5)
+        # OTPページの Login ボタンをテキストで特定してクリック
+        page.locator('button:has-text("Login")').last.click()
         print('  2FAコード入力完了')
     except Exception as e:
         print(f'  2FAなし（または待機タイムアウト）: {e}')

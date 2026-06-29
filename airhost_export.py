@@ -6,7 +6,7 @@ AirHost CSV 自動エクスポートスクリプト（改良版）
 - 取得範囲：過去2ヶ月 + 未来6ヶ月
 - playwright-stealth でbot検知を回避
 """
-import io, os, json, time, re, base64, sys, random
+import io, os, json, time, re, base64, sys, random, imaplib, email as _email
 from datetime import date, timedelta
 from pathlib import Path
 from dateutil.relativedelta import relativedelta
@@ -27,7 +27,9 @@ IS_CI = os.environ.get('CI', '').lower() == 'true'
 SIGN_IN_URL      = 'https://pms.airhost.co/ja/sign_in'
 EXPORT_URL       = 'https://pms.airhost.co/ja/import-export/export-bookings'
 AIRHOST_EMAIL    = 'ishizaki.imovel@gmail.com'
-AIRHOST_PASS     = os.environ.get('AIRHOST_PASS', '11aoistaytokyo')
+AIRHOST_PASS     = os.environ.get('AIRHOST_PASS', '')
+
+GMAIL_APP_PASSWORD = os.environ.get('GMAIL_APP_PASSWORD', '')
 
 DRIVE_FOLDER_ID      = '10SFTfWNehj8M9gEgGpFh-W-VmTLkrC2V'
 DRIVE_SUBFOLDER_NAME = '元データ'
@@ -62,35 +64,39 @@ def get_date_ranges():
         cursor += relativedelta(months=2)
     return ranges
 
-# ─── Gmail 2FAコード取得 ──────────────────────────────────────
-def read_2fa_code(gmail_svc, wait_sec=90):
-    print('  2FAコード待機中...')
+# ─── Gmail 2FAコード取得（IMAP + App Password）───────────────
+def read_2fa_code(wait_sec=90):
+    """Gmail App Password + IMAP で2FAコードを取得する（OAuth不要・期限切れなし）"""
+    print('  2FAコード待機中（IMAP）...')
     for _ in range(wait_sec // 5):
         time.sleep(5)
-        res = gmail_svc.users().messages().list(
-            userId='me', q='from:airhost is:unread', maxResults=5
-        ).execute()
-        for m in res.get('messages', []):
-            msg   = gmail_svc.users().messages().get(userId='me', id=m['id'], format='full').execute()
-            body  = _decode_body(msg['payload'])
-            match = re.search(r'\b(\d{6})\b', body)
-            if match:
-                gmail_svc.users().messages().modify(
-                    userId='me', id=m['id'], body={'removeLabelIds': ['UNREAD']}
-                ).execute()
-                print(f'  コード: {match.group(1)}')
-                return match.group(1)
-    print('  ERROR: 2FAコード取得失敗')
+        try:
+            mail = imaplib.IMAP4_SSL('imap.gmail.com')
+            mail.login(AIRHOST_EMAIL, GMAIL_APP_PASSWORD)
+            mail.select('INBOX')
+            _, nums = mail.search(None, 'UNSEEN FROM "airhost"')
+            for num in nums[0].split():
+                _, data = mail.fetch(num, '(RFC822)')
+                msg  = _email.message_from_bytes(data[0][1])
+                body = ''
+                if msg.is_multipart():
+                    for part in msg.walk():
+                        if part.get_content_type() == 'text/plain':
+                            body = part.get_payload(decode=True).decode('utf-8', errors='ignore')
+                            break
+                else:
+                    body = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
+                match = re.search(r'\b(\d{6})\b', body)
+                if match:
+                    mail.store(num, '+FLAGS', '\\Seen')
+                    mail.logout()
+                    print(f'  コード取得: {match.group(1)}')
+                    return match.group(1)
+            mail.logout()
+        except Exception as e:
+            print(f'  IMAPエラー: {e}')
+    print('  ERROR: 2FAコード取得失敗（IMAP）')
     return None
-
-def _decode_body(payload):
-    if 'parts' in payload:
-        for part in payload['parts']:
-            data = part.get('body', {}).get('data', '')
-            if data:
-                return base64.urlsafe_b64decode(data + '==').decode('utf-8', errors='ignore')
-    data = payload.get('body', {}).get('data', '')
-    return base64.urlsafe_b64decode(data + '==').decode('utf-8', errors='ignore') if data else ''
 
 # ─── Driveアップロード ────────────────────────────────────────
 def upload_to_drive(filepath, drive_svc, folder_id=None):
@@ -209,7 +215,7 @@ def set_date_range(page, start_dt, end_dt):
     return True
 
 # ─── ログインフロー ────────────────────────────────────────
-def do_login(page, gmail_svc):
+def do_login(page):
     print('ログイン中...')
     page.goto(SIGN_IN_URL)
     page.wait_for_load_state('networkidle')
@@ -221,7 +227,7 @@ def do_login(page, gmail_svc):
     # 2FA
     try:
         page.wait_for_selector('#otpCode', timeout=10000)
-        code = read_2fa_code(gmail_svc)
+        code = read_2fa_code()
         if not code:
             return False
         page.fill('#otpCode', code)
@@ -255,7 +261,7 @@ def select_company(page, company_name):
     return False
 
 # ─── Cookie を使ってセッション再利用を試みる ────────────────
-def ensure_logged_in(page, context, gmail_svc):
+def ensure_logged_in(page, context):
     """Cookieがあれば再利用、なければ/期限切れならフルログイン（会社選択は select_company() で別途行う）"""
     if COOKIE_FILE.exists():
         print('Cookie読み込み中...')
@@ -268,7 +274,7 @@ def ensure_logged_in(page, context, gmail_svc):
             return True
         print('Cookie期限切れ → 再ログイン')
 
-    ok = do_login(page, gmail_svc)
+    ok = do_login(page)
     if ok:
         cookies = context.cookies()
         COOKIE_FILE.write_text(json.dumps(cookies, ensure_ascii=False))
@@ -279,15 +285,14 @@ def ensure_logged_in(page, context, gmail_svc):
 def main():
     DOWNLOAD_DIR.mkdir(exist_ok=True)
 
-    # Gmail / Drive 認証
+    # Drive 認証（Gmail は IMAP + App Password で行うため gmail_svc 不要）
     with open(GMAIL_CREDS_PATH) as f:
         creds_data = json.load(f)
-    gmail_creds = Credentials.from_authorized_user_info(creds_data)
-    if gmail_creds.expired and gmail_creds.refresh_token:
-        gmail_creds.refresh(Request())
-    gmail_svc = build('gmail', 'v1', credentials=gmail_creds, cache_discovery=False)
-    drive_svc = build('drive', 'v3', credentials=gmail_creds, cache_discovery=False)
-    print('Gmail/Drive認証 OK')
+    drive_creds = Credentials.from_authorized_user_info(creds_data)
+    if drive_creds.expired and drive_creds.refresh_token:
+        drive_creds.refresh(Request())
+    drive_svc = build('drive', 'v3', credentials=drive_creds, cache_discovery=False)
+    print('Drive認証 OK')
 
     # 元データサブフォルダ取得・作成、既存ファイル移動、日付サブフォルダ作成
     subfolder_id = get_or_create_subfolder(drive_svc)
@@ -309,7 +314,7 @@ def main():
         Stealth().use_sync(page)
 
         # ログイン or Cookie再利用
-        ok = ensure_logged_in(page, context, gmail_svc)
+        ok = ensure_logged_in(page, context)
         if not ok:
             print('ログイン失敗')
             browser.close()
@@ -351,7 +356,7 @@ def main():
                     # ログアウト・会社切替されていたら再ログイン＋会社選択
                     if SIGN_IN_URL in page.url or 'company-select' in page.url:
                         print('  セッション切れ → 再ログイン')
-                        do_login(page, gmail_svc)
+                        do_login(page)
                         cookies = context.cookies()
                         COOKIE_FILE.write_text(json.dumps(cookies, ensure_ascii=False))
                         select_company(page, co_name)

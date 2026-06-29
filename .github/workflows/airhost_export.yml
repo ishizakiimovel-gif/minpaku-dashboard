@@ -43,6 +43,7 @@ jobs:
         env:
           CI: 'true'
           AIRHOST_PASS: ${{ secrets.AIRHOST_PASS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           GMAIL_CREDS_PATH: /tmp/gmail_creds.json
           DOWNLOAD_DIR: /tmp/AirHost_CSV
           COOKIE_FILE: /tmp/airhost_cookies.json

@@ -320,14 +320,14 @@ def do_login(page):
     page.screenshot(path=str(ss_path), full_page=True)
     print(f'  スクリーンショット保存: {ss_path}  URL={page.url}')
 
-    # 2FA（メール到着まで最大30秒待つ）
+    # 2FA（Ant Design の input は DOM上では hidden 扱いのため state='attached' で待つ）
     try:
-        page.wait_for_selector('#otpCode', timeout=30000)
+        page.wait_for_selector('#otpCode', state='attached', timeout=30000)
         code = read_2fa_code()
         if not code:
             print('  2FAコード取得失敗 → ログイン中断')
             return False
-        page.fill('#otpCode', code)
+        page.locator('#otpCode').fill(code, force=True)  # force=True で hidden 状態でも入力
         page.click('button[type="submit"]')
         print('  2FAコード入力完了')
     except Exception as e:

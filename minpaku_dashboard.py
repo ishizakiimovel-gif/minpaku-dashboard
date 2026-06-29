@@ -7,7 +7,7 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-from datetime import date
+from datetime import date, datetime, timezone, timedelta
 import calendar
 import glob
 import os
@@ -23,6 +23,18 @@ try:
     _GDRIVE_OK = True
 except ImportError:
     _GDRIVE_OK = False
+
+_JST = timezone(timedelta(hours=9))
+
+def _fmt_jst(utc_str: str) -> str:
+    """UTC 文字列（Drive API の modifiedTime など）を JST 表示に変換する"""
+    if not utc_str:
+        return '不明'
+    try:
+        dt = datetime.fromisoformat(utc_str.replace('Z', '+00:00'))
+        return dt.astimezone(_JST).strftime('%Y/%m/%d %H:%M JST')
+    except Exception:
+        return utc_str
 
 # ─────────────────────────────────────────────────────────────
 # 設定
@@ -326,7 +338,7 @@ def _get_dfs_from_drive():
         if df is not None:
             airbnb_dfs.append(df)
 
-    return airhost_dfs + airbnb_dfs
+    return airhost_dfs + airbnb_dfs, combined_modified_time
 
 
 def _process_dfs(raw_dfs: list):
@@ -362,18 +374,19 @@ def _process_dfs(raw_dfs: list):
 @st.cache_data(ttl=300)
 def load_data():
     raw_dfs = []
+    updated_at = None
     # Google Drive（本番）
     if _GDRIVE_OK and 'gcp_service_account' in st.secrets:
         try:
-            raw_dfs = _get_dfs_from_drive()
+            raw_dfs, updated_at = _get_dfs_from_drive()
         except Exception as e:
             st.warning(f'Drive読み込みエラー: {e}')
     # ローカル（開発・フォールバック）
     if not raw_dfs:
         raw_dfs = _get_dfs_from_local()
     if not raw_dfs:
-        return pd.DataFrame()
-    return _process_dfs(raw_dfs)
+        return pd.DataFrame(), None
+    return _process_dfs(raw_dfs), updated_at
 
 
 def add_months(d: date, n: int) -> date:
@@ -498,7 +511,7 @@ st.set_page_config(
     layout='wide',
 )
 
-df_all = load_data()
+df_all, _airhost_updated_at = load_data()
 if df_all.empty:
     st.error('CSVデータが読み込めませんでした。')
     st.stop()
@@ -594,6 +607,10 @@ with st.sidebar:
         st.rerun()
     st.caption(f'読込件数: {len(df_all):,} 件')
 
+    # データ鮮度（全ユーザー共通）
+    _freshness_label = f'📅 データ更新: {_fmt_jst(_airhost_updated_at)}'
+    st.caption(_freshness_label)
+
     # AirHostデータ手動取得（マスターのみ）
     if is_master:
         st.divider()
@@ -617,12 +634,17 @@ with st.sidebar:
                 try:
                     with urllib.request.urlopen(req) as resp:
                         if resp.status == 204:
+                            _req_time = datetime.now(_JST).strftime('%Y/%m/%d %H:%M JST')
+                            st.session_state['_airhost_req_at'] = _req_time
                             st.success('✅ 実行をリクエストしました（1〜2分後に開始）')
                 except urllib.error.HTTPError as e:
                     st.error(f'GitHub APIエラー {e.code}: {e.read().decode()}')
                 except Exception as e:
                     st.error(f'エラー: {e}')
-    if is_master:
+        # リクエスト済みステータス表示
+        if st.session_state.get('_airhost_req_at'):
+            st.caption(f'🕐 最終リクエスト: {st.session_state["_airhost_req_at"]}')
+            st.caption('⏳ 完了後「データ再読込」を押してください')
         with st.expander('利用可能物件名（CSVから）'):
             for n in sorted(df_all['物件名'].dropna().unique()):
                 st.text(n)

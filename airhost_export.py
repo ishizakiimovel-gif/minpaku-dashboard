@@ -7,6 +7,7 @@ AirHost CSV 自動エクスポートスクリプト（改良版）
 - playwright-stealth でbot検知を回避
 """
 import io, os, json, time, re, base64, sys, random, imaplib, email as _email
+from email.utils import parsedate_to_datetime
 from datetime import date, timedelta
 from pathlib import Path
 from dateutil.relativedelta import relativedelta
@@ -67,6 +68,7 @@ def get_date_ranges():
 # ─── Gmail 2FAコード取得（IMAP + App Password）───────────────
 def read_2fa_code(wait_sec=90):
     """Gmail App Password + IMAP で2FAコードを取得する（OAuth不要・期限切れなし）"""
+    start_time = time.time()
     print('  2FAコード待機中（IMAP）...')
     # Gmail はタブ分類で INBOX 以外に入る場合があるため複数フォルダを検索
     SEARCH_FOLDERS = ['INBOX', '"[Gmail]/All Mail"']
@@ -84,7 +86,7 @@ def read_2fa_code(wait_sec=90):
                 msg_nums = nums[0].split()
                 if attempt == 0:
                     print(f'    {folder}: 未読{len(msg_nums)}件')
-                for num in msg_nums:
+                for num in reversed(msg_nums):  # 新しい順（降順）に確認
                     _, data = mail.fetch(num, '(RFC822)')
                     msg  = _email.message_from_bytes(data[0][1])
                     from_hdr = msg.get('From', '').lower()
@@ -92,6 +94,14 @@ def read_2fa_code(wait_sec=90):
                     # From か Subject に airhost が含まれるメールのみ処理
                     if 'airhost' not in from_hdr and 'airhost' not in subj_hdr:
                         continue
+                    # この関数が呼ばれる前に届いていた古いメール（60秒以上前）はスキップ
+                    try:
+                        mail_ts = parsedate_to_datetime(msg.get('Date', '')).timestamp()
+                        if mail_ts < start_time - 60:
+                            print(f'    古いコードをスキップ（{int(start_time - mail_ts)}秒前のメール）')
+                            continue
+                    except Exception:
+                        pass
                     body = ''
                     if msg.is_multipart():
                         for part in msg.walk():

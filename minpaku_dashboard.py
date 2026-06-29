@@ -141,8 +141,8 @@ def _parse_csv_bytes(raw: bytes):
 
 
 COMBINED_FILENAME     = 'AirHost_全予約データ.csv'
-AIRBNB_SUBFOLDER_NAME = 'Airbnb_神楽坂'
-AIRBNB_SUBFOLDER_ID   = '1mV0awKN0cKPMX8UasB6DcSUguOUjdxGa'
+AIRBNB_SUBFOLDER_NAME = 'Airbnb'
+AIRBNB_SUBFOLDER_ID   = '14tbWxjqsImtjDlPH3knBGU4NPbVbyKTB'
 
 
 def _extract_airbnb_room_type(listing_name: str) -> str:
@@ -273,7 +273,7 @@ def _get_dfs_from_drive():
 
     def _download(file_id):
         buf = _io.BytesIO()
-        dl  = MediaIoBaseDownload(buf, svc.files().get_media(fileId=file_id))
+        dl  = MediaIoBaseDownload(buf, svc.files().get_media(fileId=file_id, supportsAllDrives=True))
         done = False
         while not done:
             _, done = dl.next_chunk()
@@ -311,7 +311,7 @@ def _get_dfs_from_drive():
         if df is not None:
             airhost_dfs.append(df)
 
-    # ③ 神楽坂 Airbnb CSV（専用サブフォルダから常に読む）
+    # ③ Airbnb CSV（共有DriveのAirbnbフォルダから常に読む）
     airbnb_dfs = []
     airbnb_items = svc.files().list(
         q=(f"'{AIRBNB_SUBFOLDER_ID}' in parents "
@@ -320,6 +320,8 @@ def _get_dfs_from_drive():
         fields='files(id, name)',
         orderBy='name',
         pageSize=50,
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
     ).execute().get('files', [])
     for item in airbnb_items:
         df = _parse_airbnb_csv(_download(item['id']))

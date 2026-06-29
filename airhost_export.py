@@ -224,25 +224,27 @@ def do_login(page):
     page.fill('#password', AIRHOST_PASS)
     page.click('button[type="submit"]')
 
-    # 2FA
+    # 2FA（メール到着まで最大30秒待つ）
     try:
-        page.wait_for_selector('#otpCode', timeout=10000)
+        page.wait_for_selector('#otpCode', timeout=30000)
         code = read_2fa_code()
         if not code:
+            print('  2FAコード取得失敗 → ログイン中断')
             return False
         page.fill('#otpCode', code)
         page.click('button[type="submit"]')
-    except Exception:
-        print('  2FAなし')
+        print('  2FAコード入力完了')
+    except Exception as e:
+        print(f'  2FAなし（または待機タイムアウト）: {e}')
 
-    # 会社選択画面まで待つ（会社の選択は select_company() で別途行う）
+    # 会社選択画面まで待つ
     try:
-        page.wait_for_selector('text=合同会社あおい', timeout=15000)
+        page.wait_for_selector('text=合同会社あおい', timeout=20000)
         print('  会社選択画面に到達')
+        return True
     except Exception:
-        pass
-
-    return True
+        print(f'  ログイン失敗（会社選択画面に到達せず）: URL={page.url}')
+        return False
 
 
 # ─── 会社選択 ──────────────────────────────────────────────────
